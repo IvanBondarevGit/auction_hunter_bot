@@ -13,8 +13,10 @@ from telegram.ext import (
 from db import users_collection, tracked_items
 from utils.decorators import require_auth
 from services.search import load_item_by_name
+from utils.validation import get_percent_range_by_rarity, get_rarity_by_percent_range
+from datetime import datetime, timedelta
 
-# Conversation states
+# conversation states для добавления
 (
     CHOOSE_TYPE,
     ENTER_ITEM_NAME,
@@ -26,9 +28,13 @@ from services.search import load_item_by_name
     ASK_TRACK_PERCENT,
     SET_MIN_PERCENT,
     SET_MAX_PERCENT,
-    SELECT_EDIT_FIELD,
-    SET_NEW_VALUE,
-) = range(12)
+) = range(10)
+
+# conversation states для редактирования
+(
+    EDIT_SELECT_FIELD,
+    EDIT_SET_VALUE,
+) = range(100, 102)
 
 
 def get_handler():
@@ -63,33 +69,32 @@ def get_handler():
             SET_MAX_PERCENT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, set_max_percent)
             ],
-            SELECT_EDIT_FIELD: [CallbackQueryHandler(select_edit_field)],
-            SET_NEW_VALUE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, set_new_value)
-            ],
         },
         fallbacks=[],
     )
 
 
 def get_edit_handler():
+    print("[INIT] get_edit_handler active")
     return ConversationHandler(
         entry_points=[
             CallbackQueryHandler(start_edit_item, pattern=r"^edit_[a-f0-9]{24}$")
         ],
         states={
-            SELECT_EDIT_FIELD: [
+            EDIT_SELECT_FIELD: [
                 CallbackQueryHandler(
                     select_edit_field, pattern=r"^edit_(price|count|rarity|percent)$"
                 )
             ],
-            SET_NEW_VALUE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, set_new_value)
+            EDIT_SET_VALUE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, set_new_value),
+                CallbackQueryHandler(set_new_value, pattern=r"^rarity_\d$"),
             ],
         },
         fallbacks=[],
-        allow_reentry=True,
-        per_message=True,  # 👈 ЭТО ОБЯЗАТЕЛЬНО!
+        name="edit_handler",
+        persistent=False,
+        per_chat=True,
     )
 
 
@@ -580,7 +585,7 @@ async def start_edit_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         "Что вы хотите изменить?", reply_markup=InlineKeyboardMarkup(buttons)
     )
-    return SELECT_EDIT_FIELD
+    return EDIT_SELECT_FIELD
 
 
 async def select_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -588,6 +593,7 @@ async def select_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     context.user_data["edit_field"] = query.data.replace("edit_", "")
+    print("[DEBUG] Выбранное поле:", context.user_data["edit_field"])
 
     if query.data == "edit_rarity":
         buttons = [
@@ -602,37 +608,58 @@ async def select_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Выберите новую редкость артефакта:",
             reply_markup=InlineKeyboardMarkup(buttons),
         )
-        return SET_NEW_VALUE
+        return EDIT_SET_VALUE
 
     elif query.data == "edit_percent":
         await query.edit_message_text(
             "Введите новый диапазон процента (пример: 130-140):"
         )
-        return SET_NEW_VALUE
+        return EDIT_SET_VALUE
 
     elif query.data in ["edit_price", "edit_count"]:
         await query.edit_message_text("Введите новое значение:")
-        return SET_NEW_VALUE
+        return EDIT_SET_VALUE
+
+    else:
+        await query.edit_message_text("❌ Неизвестное поле для редактирования.")
+        return EDIT_SET_VALUE
 
 
 async def set_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("🔧 set_new_value triggered")
     item_id = context.user_data.get("edit_item_id")
     field = context.user_data.get("edit_field")
-    value = update.message.text.strip()
+
+    if not item_id or not field:
+        await (update.message or update.callback_query).reply_text(
+            "❌ Что-то пошло не так. Попробуйте заново."
+        )
+        return EDIT_SET_VALUE
 
     update_data = {}
 
+    if update.message:
+        value = update.message.text.strip()
+    elif update.callback_query:
+        await update.callback_query.answer()
+        value = update.callback_query.data.replace("rarity_", "")
+    else:
+        return ConversationHandler.END
+
+    # Получаем текущий объект из базы
+    item = tracked_items.find_one({"_id": ObjectId(item_id)})
+
     if field == "price":
         if not value.isdigit():
-            await update.message.reply_text("❌ Введите число.")
-            return SET_NEW_VALUE
+            await update.message.reply_text("❌ Введите корректное число для цены.")
+            return EDIT_SET_VALUE
         update_data["price"] = int(value)
 
     elif field == "count":
         if not value.isdigit():
-            await update.message.reply_text("❌ Введите число.")
-            return SET_NEW_VALUE
+            await update.message.reply_text(
+                "❌ Введите корректное число для количества."
+            )
+            return EDIT_SET_VALUE
         update_data["min_count"] = int(value)
 
     elif field == "percent":
@@ -640,35 +667,139 @@ async def set_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
             min_p, max_p = map(int, value.replace(" ", "").split("-"))
             if min_p >= max_p:
                 raise ValueError
+
+            rarity = get_rarity_by_percent_range(min_p, max_p)
+            if rarity is None:
+                await update.message.reply_text(
+                    "❌ Указанный диапазон не соответствует ни одной редкости."
+                )
+                return EDIT_SET_VALUE
+
             update_data["min_percent"] = min_p
             update_data["max_percent"] = max_p
+
+            # Если текущая редкость не соответствует — обновляем
+            if item["rarity"] != rarity:
+                update_data["rarity"] = rarity
+
         except:
             await update.message.reply_text("❌ Введите диапазон как: 130-140")
-            return SET_NEW_VALUE
+            return EDIT_SET_VALUE
+
+    elif field == "rarity":
+        try:
+            rarity_value = int(value)
+            update_data["rarity"] = rarity_value
+
+            if "min_percent" in item and "max_percent" in item:
+                min_p = item["min_percent"]
+                max_p = item["max_percent"]
+                allowed_min, allowed_max = get_percent_range_by_rarity(rarity_value)
+
+                if not (allowed_min <= min_p < max_p <= allowed_max):
+                    # Удаляем старые проценты, просим ввести новые
+                    tracked_items.update_one(
+                        {"_id": ObjectId(item_id)},
+                        {"$unset": {"min_percent": "", "max_percent": ""}},
+                    )
+                    context.user_data["edit_field"] = "percent"
+                    await (update.message or update.callback_query.message).reply_text(
+                        f"⚠️ Указанная редкость не соответствует текущему диапазону процентов.\n"
+                        f"Пожалуйста, введите новый диапазон (пример: {allowed_min}-{allowed_max})"
+                    )
+                    return EDIT_SET_VALUE
+
+        except ValueError:
+            await update.message.reply_text("❌ Неверное значение редкости.")
+            return EDIT_SET_VALUE
 
     else:
-        await update.message.reply_text("❌ Неизвестное поле.")
+        await (update.message or update.callback_query.message).reply_text(
+            "❌ Неизвестное поле для редактирования."
+        )
         return ConversationHandler.END
 
-    # Обновление в базе
     tracked_items.update_one({"_id": ObjectId(item_id)}, {"$set": update_data})
-
-    await update.message.reply_text(
+    await (update.message or update.callback_query.message).reply_text(
         "✅ Параметры успешно обновлены. Используйте /list для просмотра."
     )
     return ConversationHandler.END
 
 
-async def set_new_rarity(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    rarity = int(query.data.replace("rarity_", ""))
-    item_id = context.user_data["edit_item_id"]
-
-    tracked_items.update_one({"_id": ObjectId(item_id)}, {"$set": {"rarity": rarity}})
-
-    await query.edit_message_text(
-        "✅ Редкость обновлена. Используйте /list для просмотра."
+@require_auth
+async def remove_all_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    buttons = [
+        [InlineKeyboardButton("✅ Удалить всё", callback_data="confirm_remove_all")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_remove_all")],
+    ]
+    await update.message.reply_text(
+        "❗ Вы уверены, что хотите удалить ВСЕ отслеживаемые товары и артефакты? Это действие безвозвратно.",
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
-    return ConversationHandler.END
+
+
+@require_auth
+async def confirm_remove_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    user_id = update.effective_user.id
+
+    result = tracked_items.delete_many({"user_id": user_id})
+
+    users_collection.update_one({"user_id": user_id}, {"$set": {"current_items": 0}})
+
+    await update.callback_query.edit_message_text(
+        f"✅ Удалено {result.deleted_count} отслеживаемых позиций."
+    )
+
+
+@require_auth
+async def cancel_remove_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text(
+        "❌ Отмена удаления. Всё осталось на месте."
+    )
+
+
+@require_auth
+async def not_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    result = tracked_items.update_many(
+        {"user_id": user_id}, {"$set": {"notify": False}}
+    )
+    await update.message.reply_text(
+        f"🔕 Уведомления отключены для {result.modified_count} позиций."
+    )
+
+
+@require_auth
+async def not_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    result = tracked_items.update_many({"user_id": user_id}, {"$set": {"notify": True}})
+    await update.message.reply_text(
+        f"🔔 Уведомления включены для {result.modified_count} позиций."
+    )
+
+
+@require_auth
+async def sub_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user = users_collection.find_one({"user_id": user_id})
+
+    if not user:
+        await update.message.reply_text("❌ Не удалось найти информацию о подписке.")
+        return
+
+    reg_date = user.get("reg_date")
+    max_items = user.get("max_items", 0)
+    current_items = user.get("current_items", 0)
+
+    if isinstance(reg_date, str):
+        reg_date = datetime.fromisoformat(reg_date)
+
+    expire_date = reg_date + timedelta(days=30)
+    expire_str = expire_date.strftime("%d.%m.%Y")
+
+    await update.message.reply_text(
+        f"📅 Подписка активна до: {expire_str}\n"
+        f"🎯 Лимит отслеживания: {current_items} / {max_items}"
+    )

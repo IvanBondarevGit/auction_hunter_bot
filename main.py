@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.error import TelegramError
 from config import TELEGRAM_TOKEN
 from handlers import start, auth, tracking, admin, subscription
 from handlers.tracking import (
@@ -10,7 +11,6 @@ from handlers.tracking import (
     toggle_notify,
     start_edit_item,
     select_edit_field,
-    set_new_rarity,
 )
 
 # Настройка логов
@@ -32,8 +32,16 @@ async def post_init(application):
                 "list",
                 "Выводит лимит,данные о каждом товаре/артефакте в остлеживаемом. Тут можно изменить,удалить или отключить оповещения для каждого товара",
             ),
+            ("remove_all", "Удаляет все отслеживаемые товары"),
+            ("not_on", "Включение уведомлений по каждому товару"),
+            ("not_off", "Выключение уведомлений по каждому товару"),
+            ("sub_info", "Информация о лимите и дате окончания подписки"),
         ]
     )
+
+
+async def error_handler(update, context):
+    print("Error: {context.error}")
 
 
 def main():
@@ -42,6 +50,8 @@ def main():
     )
 
     # Команды
+    application.add_error_handler(error_handler)
+
     for handler in start.get_handler():
         application.add_handler(handler)
     application.add_handler(auth.get_handler())
@@ -54,10 +64,23 @@ def main():
     )
     application.add_handler(CallbackQueryHandler(toggle_notify, pattern=r"^toggle_"))
 
-    # Редкость (обрабатывается отдельно)
+    # Удаление всех товаров
+    application.add_handler(CommandHandler("remove_all", tracking.remove_all_command))
     application.add_handler(
-        CallbackQueryHandler(set_new_rarity, pattern=r"^rarity_\d$")
+        CallbackQueryHandler(
+            tracking.confirm_remove_all, pattern="^confirm_remove_all$"
+        )
     )
+    application.add_handler(
+        CallbackQueryHandler(tracking.cancel_remove_all, pattern="^cancel_remove_all$")
+    )
+
+    # Включение и выключение уведомлений
+    application.add_handler(CommandHandler("not_off", tracking.not_off))
+    application.add_handler(CommandHandler("not_on", tracking.not_on))
+
+    # Инфо о подписке
+    application.add_handler(CommandHandler("sub_info", tracking.sub_info))
 
     # TODO: Добавим позже:
     # application.add_handler(admin.get_handler())
