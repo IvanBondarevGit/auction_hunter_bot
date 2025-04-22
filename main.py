@@ -2,10 +2,13 @@
 
 import asyncio
 import logging
+import traceback
+from telegram import BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from telegram.error import TelegramError
-from config import TELEGRAM_TOKEN
+from config import TELEGRAM_TOKEN, ADMIN_ID
 from handlers import start, auth, tracking, admin, subscription
+from handlers.admin import daily_subscription_check
 from handlers.tracking import (
     delete_tracked_item,
     toggle_notify,
@@ -20,28 +23,47 @@ logging.basicConfig(
 
 
 async def post_init(application):
-    # Тут можно будет задать команды бота
+    asyncio.create_task(daily_subscription_check(application))
+    default_commands = [
+        BotCommand("start", "Начать работу с ботом"),
+        BotCommand("help", "Помощь по командам"),
+        BotCommand("login", "Авторизация"),
+        BotCommand("add", "Добавить товар или артефакт"),
+        BotCommand(
+            "list",
+            "Показать список отслеживания. Все действия с товарами/артефактами. Изменить,удалить,откл/вкл уведомления",
+        ),
+        BotCommand("remove_all", "Удалить все отслеживаемые"),
+        BotCommand("not_on", "Включить уведомления"),
+        BotCommand("not_off", "Выключить уведомления"),
+        BotCommand("sub_info", "Инфо о подписке"),
+    ]
+
+    admin_commands = default_commands + [
+        BotCommand("add_user", "Добавить нового пользователя"),
+        BotCommand("user_list", "Список всех пользователей"),
+        BotCommand("find_user", "Найти пользователя"),
+        BotCommand("change_limit", "Изменить лимит пользователя"),
+        BotCommand("clear_user_items", "Удалить все отслеживаемые товары пользователя"),
+        BotCommand("remove_user ", "Удалить пользователя и все его товары"),
+    ]
+
+    # Команды для всех
     await application.bot.set_my_commands(
-        [
-            # Примеры, потом будем расширять
-            ("start", "Начать работу с ботом"),
-            ("help", "Помощь по командам"),
-            ("login", "Авторизация"),
-            ("add", "Добавить товар или артефакт"),
-            (
-                "list",
-                "Выводит лимит,данные о каждом товаре/артефакте в остлеживаемом. Тут можно изменить,удалить или отключить оповещения для каждого товара",
-            ),
-            ("remove_all", "Удаляет все отслеживаемые товары"),
-            ("not_on", "Включение уведомлений по каждому товару"),
-            ("not_off", "Выключение уведомлений по каждому товару"),
-            ("sub_info", "Информация о лимите и дате окончания подписки"),
-        ]
+        default_commands, scope=BotCommandScopeDefault()
+    )
+
+    # Команды только для админа
+    await application.bot.set_my_commands(
+        admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_ID)
     )
 
 
-async def error_handler(update, context):
-    print("Error: {context.error}")
+def error_handler(update, context):
+    print("Unhandled error occurred:")
+    traceback.print_exception(
+        type(context.error), context.error, context.error.__traceback__
+    )
 
 
 def main():
@@ -58,7 +80,7 @@ def main():
     application.add_handler(tracking.get_handler())  # /add и /list
     application.add_handler(tracking.get_edit_handler())  # ✏️ Редактирование
 
-    # Кнопки удаления и уведомлений
+    # Кнопки удаления и уведомлений 11
     application.add_handler(
         CallbackQueryHandler(delete_tracked_item, pattern=r"^delete_")
     )
@@ -82,9 +104,20 @@ def main():
     # Инфо о подписке
     application.add_handler(CommandHandler("sub_info", tracking.sub_info))
 
-    # TODO: Добавим позже:
-    # application.add_handler(admin.get_handler())
-    # application.add_handler(subscription.get_handler())
+    # Админские команды
+    application.add_handler(admin.get_handler())
+
+    application.add_handler(
+        CallbackQueryHandler(admin.extend_subscription, pattern=r"^extend_sub:")
+    )
+    application.add_handler(
+        CallbackQueryHandler(admin.remove_subscription_user, pattern=r"^remove_sub:")
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            admin.put_subscription_on_control, pattern=r"^control_sub:"
+        )
+    )
 
     # Запускаем polling
     application.run_polling()

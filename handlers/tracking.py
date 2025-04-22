@@ -192,7 +192,7 @@ async def select_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.user_data.get("type") == "item":
         await query.edit_message_text(
-            f"Вы выбрали: *{item['name']}*\nТеперь введите цену в рублях, ниже которой бот будет отслеживать товар:",
+            f"Вы выбрали: *{item['name']}*\nТеперь введите цену в рублях за 1шт, ниже которой бот будет отслеживать товар:",
             parse_mode="Markdown",
         )
         return SET_PRICE
