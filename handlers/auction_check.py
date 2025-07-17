@@ -142,8 +142,28 @@ async def process_auction_data(application, tracked_items_for_id, lots):
                         continue
                     # отправляем уведомление
             else:
-                # Артефакты: тут добавишь свою фильтрацию по редкости/процентам когда будет надо
-                pass
+                # Артефакты:
+                if filter_["type"] == "artifact":
+                    add = lot.get("additional", {})
+                    # Проверяем редкость
+                    if "qlt" not in add or add["qlt"] != filter_["rarity"]:
+                        continue
+                    # Если пользователь хочет фильтрацию по проценту
+                    if (
+                        filter_.get("min_percent") is not None
+                        and filter_.get("max_percent") is not None
+                    ):
+                        ptn = add.get("ptn")
+                        if ptn is None:
+                            continue  # В лоте нет процента — пропускаем
+                        if not (
+                            filter_["min_percent"] <= ptn <= filter_["max_percent"]
+                        ):
+                            continue  # Процент не подходит
+                    # Фильтрация по цене (buyout или ставка) — аналогично обычным предметам
+                    if price_per_unit > filter_["price"]:
+                        continue
+                    # отправляем уведомление
 
             # Всё подходит — отправляем уведомление
             await send_lot_notification(
@@ -175,30 +195,51 @@ async def send_lot_notification(
     total_price,
     remaining_minutes,
 ):
-    """
-    Отправка уведомления о лоте пользователю.
-    Показывает:
-    - Название товара
-    - Тип цены (Выкуп/Ставка)
-    - Количество
-    - Общая цена
-    - Цена за 1 шт (если amount > 1)
-    - Время до конца
-    """
     try:
         amount = lot["amount"]
         total_price_str = f"{int(total_price):,}".replace(",", " ")
         price_per_unit_str = f"{round(price_per_unit, 2):,}".replace(",", " ")
-        msg = (
-            f"🛒 Найден выгодный лот!\n"
-            f"Товар: {filter_['name']}\n"
-            f"Тип цены: {'Выкуп' if price_type == 'buyout' else 'Ставка'}\n"
-            f"Количество: {amount}\n"
-            f"Общая цена: {total_price_str} руб\n"
-        )
-        if amount > 1:
-            msg += f"Цена за 1 шт: {price_per_unit_str} руб\n"
-        msg += f"Время до конца: {int(remaining_minutes)} минут\n"
+        msg = ""
+        # Если это артефакт
+        if filter_["type"] == "artifact":
+            add = lot.get("additional", {})
+            rarity_names = [
+                "Обычный",
+                "Необычный",
+                "Особый",
+                "Редкий",
+                "Исключительный",
+                "Легендарный",
+            ]
+            rarity_name = rarity_names[filter_.get("rarity", 0)]
+            msg += (
+                f"🌀 Найден артефакт!\n"
+                f"Название: {filter_['name']}\n"
+                f"Редкость: {rarity_name}\n"
+                f"Тип цены: {'Выкуп' if price_type == 'buyout' else 'Ставка'}\n"
+                f"Общая цена: {total_price_str} руб\n"
+            )
+            # Добавляем процент, если фильтровали по проценту и процент есть
+            if (
+                filter_.get("min_percent") is not None
+                and filter_.get("max_percent") is not None
+                and "ptn" in add
+            ):
+                msg += f"Процент: {add['ptn']}%\n"
+            msg += f"Время до конца: {int(remaining_minutes)} минут\n"
+        # Обычный товар
+        else:
+            msg += (
+                f"🛒 Найден выгодный лот!\n"
+                f"Товар: {filter_['name']}\n"
+                f"Тип цены: {'Выкуп' if price_type == 'buyout' else 'Ставка'}\n"
+                f"Количество: {amount}\n"
+                f"Общая цена: {total_price_str} руб\n"
+            )
+            if amount > 1:
+                msg += f"Цена за 1 шт: {price_per_unit_str} руб\n"
+            msg += f"Время до конца: {int(remaining_minutes)} минут\n"
+
         await application.bot.send_message(chat_id=filter_["user_id"], text=msg)
         print(f"[INFO] Notification sent to {filter_['user_id']}")
     except Exception as e:
