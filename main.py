@@ -80,7 +80,7 @@ def main():
     application.add_handler(tracking.get_handler())  # /add и /list
     application.add_handler(tracking.get_edit_handler())  # ✏️ Редактирование
 
-    # Кнопки удаления и уведомлений 11
+    # Кнопки удаления и уведомлений
     application.add_handler(
         CallbackQueryHandler(delete_tracked_item, pattern=r"^delete_")
     )
