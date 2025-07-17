@@ -7,8 +7,9 @@ from telegram import BotCommand, BotCommandScopeDefault, BotCommandScopeChat
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from telegram.error import TelegramError
 from config import TELEGRAM_TOKEN, ADMIN_ID
-from handlers import start, auth, tracking, admin, subscription
+from handlers import start, auth, tracking, admin, subscription, auction_check
 from handlers.admin import daily_subscription_check
+from handlers.auction_check import check_auction_items
 from handlers.tracking import (
     delete_tracked_item,
     toggle_notify,
@@ -24,6 +25,7 @@ logging.basicConfig(
 
 async def post_init(application):
     asyncio.create_task(daily_subscription_check(application))
+    asyncio.create_task(check_auction_items(application))
     default_commands = [
         BotCommand("start", "Начать работу с ботом"),
         BotCommand("help", "Помощь по командам"),
