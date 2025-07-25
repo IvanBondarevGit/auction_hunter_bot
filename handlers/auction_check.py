@@ -93,7 +93,7 @@ async def check_auction_items(application):
                 headers = {"Authorization": f"Bearer {token}"}
                 params = {
                     "additional": "true",
-                    "limit": 200,  # можно поставить больше, но не переборщи — API может урезать
+                    "limit": 20,  # можно поставить больше, но не переборщи — API может урезать
                 }
                 async with httpx.AsyncClient(timeout=20) as client:
                     url = f"{API_BASE_URL}/ru/auction/{item_id}/lots"
@@ -106,7 +106,7 @@ async def check_auction_items(application):
             except Exception as e:
                 print(f"[ERROR] Auction check failed for item_id={item_id}: {e}")
                 await asyncio.sleep(2)
-        await asyncio.sleep(10)  # Пауза между циклами (регулируй под нагрузку)
+        await asyncio.sleep(1)  # Пауза между циклами (регулируй под нагрузку)
 
 
 async def process_auction_data(application, tracked_items_for_id, lots):
