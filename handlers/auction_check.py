@@ -39,6 +39,31 @@ class StalcraftAuth:
             return cls._token
 
 
+def calc_artifact_percent(lot_additional: dict) -> float | None:
+    """
+    Возвращает процент качества артефакта по JSON.
+    Если qlt отсутствует, считается qlt=0 (обычный).
+    """
+    qlt = lot_additional.get("qlt", 0)
+    stats_random = lot_additional.get("stats_random")
+    if stats_random is None:
+        return None
+
+    formulas = {
+        0: (25.0, 50.0),
+        1: (2.5, 105.0),
+        2: (2.24, 114.54),
+        3: (2.5, 125.0),
+        4: (4.35, 130.0),
+        5: (4.08, 140.0),
+    }
+    if qlt not in formulas:
+        return None
+    A, B = formulas[qlt]
+    percent = round(A * stats_random + B, 2)
+    return percent
+
+
 # Основная функция
 async def check_auction_items(application):
     request_count = 0
@@ -66,7 +91,10 @@ async def check_auction_items(application):
             try:
                 token = await StalcraftAuth.get_token()
                 headers = {"Authorization": f"Bearer {token}"}
-                params = {"additional": "true"}
+                params = {
+                    "additional": "true",
+                    "limit": 200,  # можно поставить больше, но не переборщи — API может урезать
+                }
                 async with httpx.AsyncClient(timeout=20) as client:
                     url = f"{API_BASE_URL}/ru/auction/{item_id}/lots"
                     resp = await client.get(url, headers=headers, params=params)
@@ -78,12 +106,21 @@ async def check_auction_items(application):
             except Exception as e:
                 print(f"[ERROR] Auction check failed for item_id={item_id}: {e}")
                 await asyncio.sleep(2)
-        await asyncio.sleep(1)  # Пауза между циклами (регулируй под нагрузку)
+        await asyncio.sleep(10)  # Пауза между циклами (регулируй под нагрузку)
 
 
 async def process_auction_data(application, tracked_items_for_id, lots):
     now = datetime.now(timezone.utc)
+
+    # Запись JSON,если предмет соответствует фильтру
     for lot in lots:
+        if lot.get("itemId") == "49zn" and lot["buyoutPrice"] >= 180000:
+            import json
+
+            with open("debug_lot.json", "a", encoding="utf-8") as f:
+                f.write(json.dumps(lot, ensure_ascii=False, indent=2))
+                f.write("\n" + "=" * 40 + "\n")
+
         # Проверка полей
         if not all(k in lot for k in ("itemId", "amount", "startPrice", "endTime")):
             continue
@@ -106,14 +143,6 @@ async def process_auction_data(application, tracked_items_for_id, lots):
             continue
 
         # Выбор цены: buyout или ставка
-        if (
-            lot.get("itemId") == "y5k0" and total_price < 3_000_000
-        ):  # вместо y5k0 укажи нужный ID или убери условие вообще для теста
-            import json
-
-            with open("debug_lot.json", "a", encoding="utf-8") as f:
-                f.write(json.dumps(lot, ensure_ascii=False, indent=2))
-                f.write("\n" + "=" * 40 + "\n")
 
         price_type = None
         if remaining_minutes > TRACK_WINDOW_MINUTES and lot.get("buyoutPrice", 0) > 0:
@@ -132,8 +161,10 @@ async def process_auction_data(application, tracked_items_for_id, lots):
             if not user:
                 continue
             # Сравниваем условия (реализуй под свои нужды, пример для обычных товаров):
+
+            # Обычные предметы: по цене и количеству
             if filter_["type"] == "item":
-                # Обычные предметы: по цене и количеству
+
                 if filter_["type"] == "item":
                     if (
                         price_per_unit > filter_["price"]
@@ -142,28 +173,33 @@ async def process_auction_data(application, tracked_items_for_id, lots):
                         continue
                     # отправляем уведомление
             else:
+
                 # Артефакты:
                 if filter_["type"] == "artifact":
+
                     add = lot.get("additional", {})
-                    # Проверяем редкость
-                    if "qlt" not in add or add["qlt"] != filter_["rarity"]:
+                    rarity = add.get("qlt", 0)  # по умолчанию 0
+                    percent = calc_artifact_percent(add)
+
+                    # Проверяем редкость (qlt)
+                    if rarity != filter_["rarity"]:
                         continue
-                    # Если пользователь хочет фильтрацию по проценту
+
+                    # Проверяем процент (если в фильтре задан)
                     if (
                         filter_.get("min_percent") is not None
                         and filter_.get("max_percent") is not None
                     ):
-                        ptn = add.get("ptn")
-                        if ptn is None:
-                            continue  # В лоте нет процента — пропускаем
+                        if percent is None:
+                            continue
                         if not (
-                            filter_["min_percent"] <= ptn <= filter_["max_percent"]
+                            filter_["min_percent"] <= percent <= filter_["max_percent"]
                         ):
-                            continue  # Процент не подходит
-                    # Фильтрация по цене (buyout или ставка) — аналогично обычным предметам
+                            continue
+
+                    # Фильтрация по цене (аналогично предметам)
                     if price_per_unit > filter_["price"]:
                         continue
-                    # отправляем уведомление
 
             # Всё подходит — отправляем уведомление
             await send_lot_notification(
@@ -174,6 +210,7 @@ async def process_auction_data(application, tracked_items_for_id, lots):
                 price_per_unit,
                 total_price,
                 remaining_minutes,
+                percent,  # передаём в send_lot_notification
             )
             processed_lots.insert_one(
                 {
@@ -194,12 +231,14 @@ async def send_lot_notification(
     price_per_unit,
     total_price,
     remaining_minutes,
+    percent=None,
 ):
     try:
         amount = lot["amount"]
         total_price_str = f"{int(total_price):,}".replace(",", " ")
         price_per_unit_str = f"{round(price_per_unit, 2):,}".replace(",", " ")
         msg = ""
+
         # Если это артефакт
         if filter_["type"] == "artifact":
             add = lot.get("additional", {})
@@ -211,7 +250,8 @@ async def send_lot_notification(
                 "Исключительный",
                 "Легендарный",
             ]
-            rarity_name = rarity_names[filter_.get("rarity", 0)]
+            rarity = add.get("qlt", 0)
+            rarity_name = rarity_names[rarity]
             msg += (
                 f"🌀 Найден артефакт!\n"
                 f"Название: {filter_['name']}\n"
@@ -219,15 +259,11 @@ async def send_lot_notification(
                 f"Тип цены: {'Выкуп' if price_type == 'buyout' else 'Ставка'}\n"
                 f"Общая цена: {total_price_str} руб\n"
             )
-            # Добавляем процент, если фильтровали по проценту и процент есть
-            if (
-                filter_.get("min_percent") is not None
-                and filter_.get("max_percent") is not None
-                and "ptn" in add
-            ):
-                msg += f"Процент: {add['ptn']}%\n"
+            # Добавляем процент, если удалось вычислить
+            if percent is not None:
+                msg += f"Качество: {percent}%\n"
             msg += f"Время до конца: {int(remaining_minutes)} минут\n"
-        # Обычный товар
+
         else:
             msg += (
                 f"🛒 Найден выгодный лот!\n"
