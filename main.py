@@ -122,21 +122,6 @@ def main():
         )
     )
 
-    # Проверяем соединение с Telegram API перед стартом polling
-    async def test_get_me():
-        for attempt in range(5):
-            try:
-                await application.bot.get_me()
-                print("[INFO] Telegram API доступен!")
-                return True
-            except Exception as e:
-                print(f"[ERROR] Не могу подключиться к Telegram API: {e}")
-                await asyncio.sleep(5)
-        print("[FATAL] Не удалось подключиться к Telegram API после 5 попыток.")
-        return False
-
-    asyncio.run(test_get_me())  # запускаем async-функцию синхронно
-
     # Запускаем polling
     application.run_polling()
 
