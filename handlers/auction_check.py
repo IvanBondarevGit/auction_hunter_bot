@@ -107,7 +107,7 @@ async def process_auction_data(application, tracked_items_for_id, lots):
 
         # Выбор цены: buyout или ставка
         if (
-            lot.get("itemId") == "y5k0"
+            lot.get("itemId") == "y5k0" and total_price < 3_000_000
         ):  # вместо y5k0 укажи нужный ID или убери условие вообще для теста
             import json
 
