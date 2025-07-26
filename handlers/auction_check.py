@@ -23,7 +23,7 @@ class StalcraftAuth:
             and now - cls._token_created < cls._token_lifetime - 60
         ):
             return cls._token
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=3) as client:
             resp = await client.post(
                 AUTH_URL,
                 data={
@@ -68,7 +68,7 @@ def calc_artifact_percent(lot_additional: dict) -> float | None:
 async def check_auction_items(application):
     request_count = 0
     start_time = datetime.utcnow().timestamp()
-    print("[INFO] Auction monitoring started")
+    print("[DEBAG] Auction monitoring started")
     while True:
         all_items = list(tracked_items.find({"notify": True}))
         if not all_items:
@@ -83,10 +83,9 @@ async def check_auction_items(application):
 
         for item_id, items in items_by_id.items():
             # API limit control
-            print(f"[INFO] request_count ={request_count}")
 
             limit = 200 if any(item.get("first_check") for item in items) else 10
-            print(f"[DEBUG] Для item_id={item_id} используем limit={limit}")
+            # print(f"[DEBUG] For item_id={item_id} limit={limit}")
 
             if request_count >= REQUESTS_PER_MIN:
                 elapsed = datetime.utcnow().timestamp() - start_time
@@ -101,7 +100,7 @@ async def check_auction_items(application):
                     "additional": "true",
                     "limit": limit,
                 }
-                async with httpx.AsyncClient(timeout=20) as client:
+                async with httpx.AsyncClient(timeout=3) as client:
                     url = f"{API_BASE_URL}/ru/auction/{item_id}/lots"
                     resp = await client.get(url, headers=headers, params=params)
                     resp.raise_for_status()
@@ -119,7 +118,7 @@ async def check_auction_items(application):
             except Exception as e:
                 print(f"[ERROR] Auction check failed for item_id={item_id}: {e}")
                 await asyncio.sleep(1)
-        #await asyncio.sleep(10)  # Пауза между циклами
+        # await asyncio.sleep(10)  # Пауза между циклами
 
 
 async def process_auction_data(application, tracked_items_for_id, lots):
