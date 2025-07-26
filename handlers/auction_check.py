@@ -115,6 +115,9 @@ async def check_auction_items(application):
                     )
 
                 request_count += 1
+            except asyncio.CancelledError:
+                # Позволяем корректно завершить работу при отмене задачи
+                raise
             except Exception as e:
                 print(f"[ERROR] Auction check failed for item_id={item_id}: {e}")
                 await asyncio.sleep(1)
@@ -290,5 +293,7 @@ async def send_lot_notification(
 
         await application.bot.send_message(chat_id=filter_["user_id"], text=msg)
         print(f"[INFO] Notification sent to {filter_['user_id']}")
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         print(f"[ERROR] Failed to send notification: {e}")
