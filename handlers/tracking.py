@@ -317,6 +317,7 @@ async def confirm_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "item_id": item["data"]["id"],
         "price": context.user_data["price"],
         "notify": True,
+        "first_check": True,
     }
 
     if user_type == "item":
@@ -546,7 +547,12 @@ async def toggle_notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     new_notify = not item.get("notify", True)
-    tracked_items.update_one({"_id": ObjectId(_id)}, {"$set": {"notify": new_notify}})
+    update_query = {"notify": new_notify}
+    # Если включаем уведомления — ставим first_check=True (для глубокого поиска)
+    if new_notify:
+        update_query["first_check"] = True
+
+    tracked_items.update_one({"_id": ObjectId(_id)}, {"$set": update_query})
 
     status = "включены" if new_notify else "отключены"
     await query.edit_message_text(f"🔔 Уведомления {status}. Обновите /list.")
@@ -719,6 +725,7 @@ async def set_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
+    update_data["first_check"] = True
     tracked_items.update_one({"_id": ObjectId(item_id)}, {"$set": update_data})
     await (update.message or update.callback_query.message).reply_text(
         "✅ Параметры успешно обновлены. Используйте /list для просмотра."
@@ -774,7 +781,9 @@ async def not_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @require_auth
 async def not_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    result = tracked_items.update_many({"user_id": user_id}, {"$set": {"notify": True}})
+    result = tracked_items.update_many(
+        {"user_id": user_id}, {"$set": {"notify": True, "first_check": True}}
+    )
     await update.message.reply_text(
         f"🔔 Уведомления включены для {result.modified_count} позиций."
     )

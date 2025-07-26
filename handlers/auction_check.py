@@ -72,6 +72,7 @@ async def check_auction_items(application):
     while True:
         all_items = list(tracked_items.find({"notify": True}))
         if not all_items:
+            print("[INFO] No tracked_items")
             await asyncio.sleep(10)
             continue
 
@@ -82,6 +83,11 @@ async def check_auction_items(application):
 
         for item_id, items in items_by_id.items():
             # API limit control
+            print(f"[INFO] request_count ={request_count}")
+
+            limit = 200 if any(item.get("first_check") for item in items) else 10
+            print(f"[DEBUG] Для item_id={item_id} используем limit={limit}")
+
             if request_count >= REQUESTS_PER_MIN:
                 elapsed = datetime.utcnow().timestamp() - start_time
                 if elapsed < 60:
@@ -93,7 +99,7 @@ async def check_auction_items(application):
                 headers = {"Authorization": f"Bearer {token}"}
                 params = {
                     "additional": "true",
-                    "limit": 150,  # можно поставить больше, но не переборщи — API может урезать
+                    "limit": limit,
                 }
                 async with httpx.AsyncClient(timeout=20) as client:
                     url = f"{API_BASE_URL}/ru/auction/{item_id}/lots"
@@ -102,11 +108,18 @@ async def check_auction_items(application):
                     data = resp.json()
                 lots = data.get("lots", [])
                 await process_auction_data(application, items, lots)
+
+                if limit == 200:
+                    tracked_items.update_many(
+                        {"item_id": item_id, "first_check": True},
+                        {"$set": {"first_check": False}},
+                    )
+
                 request_count += 1
             except Exception as e:
                 print(f"[ERROR] Auction check failed for item_id={item_id}: {e}")
-                await asyncio.sleep(2)
-        await asyncio.sleep(10)  # Пауза между циклами (регулируй под нагрузку)
+                await asyncio.sleep(1)
+        #await asyncio.sleep(10)  # Пауза между циклами
 
 
 async def process_auction_data(application, tracked_items_for_id, lots):
